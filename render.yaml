@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: ipay-telegram-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: CHANNEL_URL
+        value: https://t.me/Ipay_Official_Channel
+      - key: GROUP_URL
+        value: https://t.me/ipayvip_1
+      - key: START_NOW_URL
+        value: https://share.ipaynow.net/?data=dWlkPTg5NDIzNSZjaGFubmVsPTEwMDEmYnVzaW5lc3NfaWQ9OTAwMDAy
+      - key: COMMISSION
+        value: 4%
+      - key: REFERRER_REWARD
+        value: "50"
+      - key: REFERRED_REWARD
+        value: "100"
+      - key: WEBHOOK_URL
+        sync: false
