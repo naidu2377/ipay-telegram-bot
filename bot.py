@@ -2,14 +2,16 @@ import logging
 import os
 import secrets
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.constants import ParseMode
-from telegram.error import NetworkError, TimedOut
+from telegram.error import BadRequest, Conflict, InvalidToken, NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -37,10 +39,21 @@ ADMIN_IDS = {
 }
 CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/Ipay_Official_Channel")
 GROUP_URL = os.getenv("GROUP_URL", "https://t.me/ipayvip_1")
+CUSTOMER_SERVICE_URL = os.getenv("CUSTOMER_SERVICE_URL", "https://t.me/ipay800")
 START_NOW_URL = os.getenv("START_NOW_URL", "https://share.ipaynow.net/?data=dWlkPTg5NDIzNSZjaGFubmVsPTEwMDEmYnVzaW5lc3NfaWQ9OTAwMDAy")
 COMMISSION = os.getenv("COMMISSION", "4%")
+WELCOME_CAPTION = (
+    "🪐WELCOME TO <b>iPAY</b>\n"
+    "━━━━━━━━━━━━━━\n\n"
+    f"📌 {COMMISSION} commission on deposits\n"
+    "🎁 Rs 5 activity reward\n\n"
+    "⚡ Fast, smooth, and easy\n"
+    "⏩ Choose an option to get started"
+)
 DB_PATH = os.getenv("DB_PATH", "ipay.db")
 BOT_DIR = Path(__file__).resolve().parent
+if not Path(DB_PATH).is_absolute():
+    DB_PATH = str(BOT_DIR / DB_PATH)
 SCREEN_IMAGES = {
     "welcome": "photo_2026-09-06_13-45-50.jpg",
     "wallets": "photo_2026-09-30_19-47-27.jpg",
@@ -49,6 +62,7 @@ SCREEN_IMAGES = {
     "issue_order": "photo_2026-09-30_19-47-53.jpg",
     "issue_upi": "photo_2026-09-30_19-47-46.jpg",
     "issue_notice": "photo_2026-09-30_19-47-48.jpg",
+    "referral": "photo_2026-09-30_19-47-36.jpg",
 }
 
 # Referral values are configurable; change them in Render Environment Variables.
@@ -66,12 +80,13 @@ PAYOUT_WALLETS = [
 ]
 
 SECURITY_TEXT = (
-    "🛡️ <b>SECURITY TIPS</b>\n\n"
-    "🔐 Never share your password or OTP.\n"
-    "🔒 Keep your account information secure.\n"
-    "🚫 Never share sensitive account details with unknown persons.\n"
-    "✅ Verify official I PAY support accounts before responding.\n"
-    "⚠️ Be careful of fake accounts, links and scams."
+    "🛡️ <b>iPAY SECURITY TIPS</b>\n\n"
+    "🔐 Never share your OTP, password, or UPI PIN with anyone, including support.\n"
+    "💸 You do not need to enter your UPI PIN to receive money.\n"
+    "🔎 Check the recipient and amount carefully before confirming a payment.\n"
+    "🔗 Avoid suspicious links and never share screen access or banking details.\n"
+    "✅ Contact support only through the links in this bot.\n"
+    "⚠️ If a payment looks suspicious, contact your bank promptly and report it to support."
 )
 
 FAQ_TEXT = (
@@ -83,16 +98,24 @@ FAQ_TEXT = (
     "• <b>How do I get support?</b>\n"
     "Use the Support menu to open the support group/contact.\n\n"
     "• <b>Where can I see my referral details?</b>\n"
-    "Open 👤 Profile from the main menu."
+    "Open Referral from the main menu."
 )
 
 # ----------------------------
 # Database
 # ----------------------------
+@contextmanager
 def db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_db():
@@ -113,6 +136,12 @@ def init_db():
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS media_cache (
+                image_key TEXT PRIMARY KEY,
+                telegram_file_id TEXT NOT NULL
             )
         """)
         conn.commit()
@@ -203,6 +232,32 @@ def get_all_user_ids():
         return [r[0] for r in conn.execute("SELECT id FROM users").fetchall()]
 
 
+def get_cached_image_id(image_key):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT telegram_file_id FROM media_cache WHERE image_key=?",
+            (image_key,),
+        ).fetchone()
+        return row["telegram_file_id"] if row else None
+
+
+def cache_sent_image(image_key, message):
+    photos = getattr(message, "photo", None)
+    if not photos:
+        return
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO media_cache(image_key,telegram_file_id) VALUES(?,?) "
+            "ON CONFLICT(image_key) DO UPDATE SET telegram_file_id=excluded.telegram_file_id",
+            (image_key, photos[-1].file_id),
+        )
+
+
+def clear_cached_image(image_key):
+    with db() as conn:
+        conn.execute("DELETE FROM media_cache WHERE image_key=?", (image_key,))
+
+
 # ----------------------------
 # UI
 # ----------------------------
@@ -217,30 +272,11 @@ def main_menu():
             InlineKeyboardButton("💬 SUPPORT", callback_data="support"),
         ],
         [
-            InlineKeyboardButton("👤 PROFILE", callback_data="profile"),
             InlineKeyboardButton("🤝 REFERRAL", callback_data="referral"),
         ],
         [
             InlineKeyboardButton("🚀 START NOW ↗", url=START_NOW_URL),
         ],
-    ])
-
-
-def home_buttons():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("💰 WALLETS", callback_data="wallets"),
-            InlineKeyboardButton("❗ ISSUES", callback_data="issues"),
-        ],
-        [
-            InlineKeyboardButton("🛡️ SECURITY", callback_data="security"),
-            InlineKeyboardButton("💬 SUPPORT", callback_data="support"),
-        ],
-        [
-            InlineKeyboardButton("👤 PROFILE", callback_data="profile"),
-            InlineKeyboardButton("🤝 REFERRAL", callback_data="referral"),
-        ],
-        [InlineKeyboardButton("🚀 START NOW ↗", url=START_NOW_URL)],
     ])
 
 
@@ -292,7 +328,7 @@ def security_menu():
 
 def support_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👨‍💼 CUSTOMER SERVICE", url=GROUP_URL)],
+        [InlineKeyboardButton("👨‍💼 CUSTOMER SERVICE", url=CUSTOMER_SERVICE_URL)],
         [InlineKeyboardButton("👥 SUPPORT GROUP", url=GROUP_URL)],
         [
             InlineKeyboardButton("◀️ BACK", callback_data="home"),
@@ -309,46 +345,91 @@ async def render_callback(q, context, text, reply_markup, image_key=None):
     if image_key == "welcome" and image_path is None and text is None:
         text = "Welcome image is unavailable."
 
-    if q.message.photo:
-        if image_path:
-            with image_path.open("rb") as photo:
-                await q.edit_message_media(
-                    media=InputMediaPhoto(
-                        media=photo,
+    try:
+        if q.message.photo:
+            if image_path:
+                file_id = get_cached_image_id(image_key)
+                if file_id:
+                    try:
+                        edited = await q.edit_message_media(
+                            media=InputMediaPhoto(
+                                media=file_id,
+                                caption=text,
+                                parse_mode=ParseMode.HTML if text else None,
+                            ),
+                            reply_markup=reply_markup,
+                        )
+                    except BadRequest:
+                        clear_cached_image(image_key)
+                        file_id = None
+                if not file_id:
+                    with image_path.open("rb") as photo:
+                        edited = await q.edit_message_media(
+                            media=InputMediaPhoto(
+                                media=photo,
+                                caption=text,
+                                parse_mode=ParseMode.HTML if text else None,
+                            ),
+                            reply_markup=reply_markup,
+                            read_timeout=30,
+                            write_timeout=30,
+                            connect_timeout=10,
+                            pool_timeout=10,
+                        )
+                    cache_sent_image(image_key, edited)
+            else:
+                await q.message.delete()
+                await context.bot.send_message(
+                    chat_id=q.message.chat_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
+        elif image_path:
+            await q.message.delete()
+            file_id = get_cached_image_id(image_key)
+            if file_id:
+                try:
+                    sent = await context.bot.send_photo(
+                        chat_id=q.message.chat_id,
+                        photo=file_id,
                         caption=text,
                         parse_mode=ParseMode.HTML if text else None,
-                    ),
-                    reply_markup=reply_markup,
-                    read_timeout=60,
-                    write_timeout=60,
-                    connect_timeout=20,
-                    pool_timeout=20,
-                )
+                        reply_markup=reply_markup,
+                    )
+                except BadRequest:
+                    clear_cached_image(image_key)
+                    file_id = None
+            if not file_id:
+                with image_path.open("rb") as photo:
+                    sent = await context.bot.send_photo(
+                        chat_id=q.message.chat_id,
+                        photo=photo,
+                        caption=text,
+                        parse_mode=ParseMode.HTML if text else None,
+                        reply_markup=reply_markup,
+                        read_timeout=30,
+                        write_timeout=30,
+                        connect_timeout=10,
+                        pool_timeout=10,
+                    )
+                cache_sent_image(image_key, sent)
         else:
-            await q.message.delete()
-            await context.bot.send_message(
-                chat_id=q.message.chat_id,
-                text=text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
+            await q.edit_message_text(
+                text, parse_mode=ParseMode.HTML, reply_markup=reply_markup
             )
-    elif image_path:
-        await q.message.delete()
-        with image_path.open("rb") as photo:
-            await context.bot.send_photo(
-                chat_id=q.message.chat_id,
-                photo=photo,
-                caption=text,
-                parse_mode=ParseMode.HTML if text else None,
-                reply_markup=reply_markup,
-                read_timeout=60,
-                write_timeout=60,
-                connect_timeout=20,
-                pool_timeout=20,
-            )
-    else:
-        await q.edit_message_text(
-            text, parse_mode=ParseMode.HTML, reply_markup=reply_markup
+    except NetworkError as exc:
+        logging.warning("Image screen failed (%s); falling back to text.", type(exc).__name__)
+        if q.message.photo:
+            try:
+                await q.message.delete()
+            except NetworkError:
+                pass
+        await context.bot.send_message(
+            chat_id=q.message.chat_id,
+            text=text or "Welcome to I PAY",
+            parse_mode=ParseMode.HTML if text else None,
+            reply_markup=reply_markup,
         )
 
 
@@ -356,24 +437,42 @@ async def send_welcome_image(message):
     image_path = BOT_DIR / SCREEN_IMAGES["welcome"]
     if image_path.is_file():
         try:
-            with image_path.open("rb") as photo:
-                await message.reply_photo(
-                    photo=photo,
-                    reply_markup=main_menu(),
-                    read_timeout=60,
-                    write_timeout=60,
-                    connect_timeout=20,
-                    pool_timeout=20,
-                )
+            file_id = get_cached_image_id("welcome")
+            if file_id:
+                try:
+                    sent = await message.reply_photo(
+                        photo=file_id,
+                        caption=WELCOME_CAPTION,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=main_menu(),
+                    )
+                except BadRequest:
+                    clear_cached_image("welcome")
+                    file_id = None
+            if not file_id:
+                with image_path.open("rb") as photo:
+                    sent = await message.reply_photo(
+                        photo=photo,
+                        caption=WELCOME_CAPTION,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=main_menu(),
+                        read_timeout=30,
+                        write_timeout=30,
+                        connect_timeout=10,
+                        pool_timeout=10,
+                    )
+                cache_sent_image("welcome", sent)
         except (TimedOut, NetworkError):
             logging.warning("Welcome image upload timed out; sending text fallback.")
             await message.reply_text(
-                "Welcome to I PAY", reply_markup=main_menu()
+                WELCOME_CAPTION, parse_mode=ParseMode.HTML,
+                reply_markup=main_menu()
             )
     else:
         logging.error("Welcome image is missing: %s", image_path.name)
         await message.reply_text(
-            "Welcome to I PAY", reply_markup=main_menu()
+            WELCOME_CAPTION, parse_mode=ParseMode.HTML,
+            reply_markup=main_menu()
         )
 
 
@@ -399,26 +498,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_welcome_image(update.message)
 
 
-async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    register_user(user)
-    row = get_user(user.id)
-    refs = referral_count(user.id)
-    link = f"https://t.me/{context.bot.username}?start=ref_{row['referral_code']}"
-    text = (
-        "👤 <b>MY PROFILE</b>\n\n"
-        f"🆔 Telegram ID: <code>{user.id}</code>\n"
-        f"👤 Name: {user.first_name or '-'}\n"
-        f"🔗 Referral code: <code>{row['referral_code']}</code>\n"
-        f"👥 Successful referrals: <b>{refs}</b>\n"
-        f"💰 Referral earnings: <b>₹{row['referral_earnings']:.2f}</b>\n\n"
-        f"📎 <b>Your referral link:</b>\n{link}"
-    )
-    await update.message.reply_text(
-        text, parse_mode=ParseMode.HTML, reply_markup=back_home()
-    )
-
-
 # ----------------------------
 # Callback menus
 # ----------------------------
@@ -432,7 +511,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "home":
         await render_callback(
-            q, context, None, home_buttons(), image_key="welcome"
+            q, context, WELCOME_CAPTION, main_menu(), image_key="welcome"
         )
 
     elif data == "wallets":
@@ -497,13 +576,6 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "security":
         await render_callback(
-            q, context,
-            "🛡️ <b>SECURITY & FAQ</b>\n\nChoose an option below:",
-            security_menu(),
-        )
-
-    elif data == "security_tips":
-        await render_callback(
             q, context, SECURITY_TEXT, back_home(), image_key="security"
         )
 
@@ -519,43 +591,37 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             support_menu(),
         )
 
-    elif data == "profile":
-        row = get_user(user.id)
-        refs = referral_count(user.id)
-        link = f"https://t.me/{context.bot.username}?start=ref_{row['referral_code']}"
-        text = (
-            "👤 <b>MY PROFILE</b>\n\n"
-            f"🆔 Telegram ID: <code>{user.id}</code>\n"
-            f"👤 Name: {user.first_name or '-'}\n"
-            f"🔗 Referral code: <code>{row['referral_code']}</code>\n"
-            f"👥 Successful referrals: <b>{refs}</b>\n"
-            f"💰 Referral earnings: <b>₹{row['referral_earnings']:.2f}</b>\n\n"
-            f"📎 <b>Your referral link:</b>\n{link}"
-        )
-        await render_callback(q, context, text, back_home())
-
     elif data == "referral":
         row = get_user(user.id)
         refs = referral_count(user.id)
         link = f"https://t.me/{context.bot.username}?start=ref_{row['referral_code']}"
         text = (
-            "🤝 <b>REFERRAL PROGRAM</b>\n\n"
-            f"Invite friends using your personal referral link.\n\n"
-            f"👥 Referrals: <b>{refs}</b>\n"
-            f"💰 Referral earnings: <b>₹{row['referral_earnings']:.2f}</b>\n\n"
-            f"🔗 <code>{link}</code>"
+            "🤝 <b>INVITE FRIENDS, SHARE REWARDS</b>\n\n"
+            f"👥 People registered: <b>{refs}</b>\n"
+            f"💰 Recorded referral earnings: <b>₹{row['referral_earnings']:.2f}</b>\n\n"
+            f"🔗 <b>Your personal referral link:</b>\n<code>{escape(link)}</code>"
         )
-        await render_callback(q, context, text, back_home())
+        text += (
+            "\n\n<b>How to qualify</b>\n"
+            "1. Share your personal referral link.\n"
+            "2. A new user must open your link and tap Start.\n"
+            f"3. After their first registration, Rs {REFERRER_REWARD:g} referral credit is recorded for you.\n\n"
+            "Existing users do not count as new referrals. This bot does not require an order or deposit for this credit."
+        )
+        await render_callback(q, context, text, back_home(), image_key="referral")
 
 
 # ----------------------------
 # Group new-member welcome
 # ----------------------------
 async def new_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    welcomed = False
     for member in update.message.new_chat_members:
         if member.is_bot:
             continue
         register_user(member)
+        welcomed = True
+    if welcomed:
         await send_welcome_image(update.message)
 
 
@@ -663,7 +729,6 @@ def build_application():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("profile", my_profile))
     app.add_handler(CommandHandler("admin", admin_help))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("users", users))
@@ -674,8 +739,27 @@ def build_application():
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, mentioned)
     )
+    app.add_error_handler(handle_error)
 
     return app
+
+
+async def handle_error(update, context):
+    error = context.error
+    if isinstance(error, Conflict):
+        logging.error(
+            "Telegram polling conflict: another bot process or an active webhook is using this token."
+        )
+        return
+    logging.error("Update handler failed (%s).", type(error).__name__)
+    if isinstance(error, NetworkError) or not update or not update.effective_message:
+        return
+    try:
+        await update.effective_message.reply_text(
+            "Sorry, something went wrong. Please try again or contact support."
+        )
+    except Exception:
+        pass
 
 
 def main():
@@ -686,28 +770,31 @@ def main():
     logging.getLogger("httpx").setLevel(logging.WARNING)
     application = build_application()
 
+    webhook_url = os.getenv("WEBHOOK_URL", "").rstrip("/")
     port = int(os.getenv("PORT", "7860" if os.getenv("SPACE_ID") else "10000"))
-    if os.getenv("SPACE_ID"):
+    if os.getenv("SPACE_ID") or (os.getenv("RENDER") and not webhook_url):
         start_health_server(port)
 
-    # Set WEBHOOK_URL for Render. Hugging Face Spaces uses polling.
-    webhook_url = os.getenv("WEBHOOK_URL", "").rstrip("/")
-
-    if webhook_url:
-        logging.info("Starting Telegram webhook on port %s", port)
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path="telegram",
-            webhook_url=f"{webhook_url}/telegram",
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES,
-        )
-    else:
-        logging.info("Starting polling mode.")
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
+    try:
+        if webhook_url:
+            logging.info("Starting Telegram webhook on port %s", port)
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=port,
+                url_path="telegram",
+                webhook_url=f"{webhook_url}/telegram",
+                drop_pending_updates=False,
+                allowed_updates=Update.ALL_TYPES,
+            )
+        else:
+            logging.info("Starting polling mode.")
+            application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=False,
+            )
+    except InvalidToken:
+        logging.critical(
+            "Telegram rejected BOT_TOKEN. Create a fresh token with BotFather; its value was suppressed."
         )
 
 
