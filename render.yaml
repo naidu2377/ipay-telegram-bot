@@ -1,8 +1,10 @@
 services:
   - type: web
     name: ipay-telegram-bot
-    runtime: docker
+    runtime: python
     plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
     envVars:
       - key: BOT_TOKEN
         sync: false
@@ -25,4 +27,4 @@ services:
       - key: PORT
         value: "7860"
       - key: DB_PATH
-        value: /app/data/ipay.db
+        value: ipay.db

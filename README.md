@@ -2,8 +2,6 @@
 title: I PAY Telegram Bot
 colorFrom: blue
 colorTo: yellow
-sdk: docker
-app_port: 7860
 ---
 
 # I PAY Telegram Bot
@@ -24,7 +22,6 @@ Telegram bot matching the supplied I PAY layout:
 - SQLite storage
 - Render webhook deployment
 - Polling mode for local testing
-- Hugging Face Spaces Docker deployment
 
 ## Important
 
@@ -64,54 +61,20 @@ Create a new repository and upload:
 
 Do not upload `.env` or `ipay.db`.
 
-## 4. Hugging Face Spaces
+## 4. Render
 
-This repository includes a Docker Space setup. Hugging Face currently requires a PRO plan for personal accounts to create Docker Spaces. CPU Basic has no hourly compute charge, but the account plan is still required.
-
-1. Sign in at Hugging Face and create a new Space with the Docker SDK.
-2. Choose a Space name and visibility. Private is recommended because a public Space exposes its source code.
-3. Upload or push `bot.py`, `Dockerfile`, `README.md`, `requirements.txt`, and the `photo_*.jpg` files. Do not upload `.env` or `ipay.db`.
-4. In the Space's **Settings**, add the secrets and variables below.
-5. Wait for the Docker build to finish, then check the Space's **Logs** for `Starting polling mode.`
-
-The Space reads `BOT_TOKEN` from its secret settings and starts the bot in polling mode. Do not set `WEBHOOK_URL` for this deployment.
-
-In the Space's **Settings**, add:
-
-- Secret `BOT_TOKEN`: your current BotFather token
-- Variable `ADMIN_IDS`: your Telegram numeric user ID (comma-separated for multiple admins)
-
-Optional variables include `CHANNEL_URL`, `GROUP_URL`, `START_NOW_URL`, `COMMISSION`, `REFERRER_REWARD`, and `REFERRED_REWARD`.
-
-The SQLite database is stored inside the container by default and can be lost when the Space restarts or rebuilds. For persistent data, attach a Hugging Face Storage Bucket to `/data` and set the Space variable `DB_PATH` to `/data/ipay.db`.
-
-Free CPU Spaces can sleep after 48 hours of inactivity. A sleeping Space stops the bot until it wakes. Choose paid hardware if the bot must stay available continuously.
-
-## 5. Render
-
-Create a new Web Service connected to the GitHub repository.
+Create a new Web Service connected to the GitHub repository, or create it from the included Blueprint. The Blueprint uses Render's native Python runtime, installs `requirements.txt`, and starts the bot with `python bot.py`.
 
 The included `render.yaml` can also be used as a Blueprint.
 
 Set these environment variables in Render:
 
 - `BOT_TOKEN`
-- `ADMIN_IDS`
-- `WEBHOOK_URL`
+- `ADMIN_IDS` (optional; required for admin commands)
 
-The other values are already supplied in `render.yaml`.
+The bot receives Telegram updates through long polling, so it does not need `WEBHOOK_URL`. The service also exposes a small health endpoint on Render's assigned `PORT`.
 
-After the Render service is created, copy its public URL, for example:
-
-`https://ipay-telegram-bot.onrender.com`
-
-Set:
-
-`WEBHOOK_URL=https://ipay-telegram-bot.onrender.com`
-
-Then redeploy.
-
-## 6. Telegram permissions
+## 5. Telegram permissions
 
 For new-member welcomes in your group:
 
@@ -121,7 +84,7 @@ For new-member welcomes in your group:
 
 For channel-management features, give the bot only the permissions it actually needs.
 
-## 7. Test
+## 6. Test
 
 Open the bot and send:
 
@@ -139,7 +102,7 @@ Then test:
 - PROFILE
 - REFERRAL
 
-## 8. Admin commands
+## 7. Admin commands
 
 `/admin`
 
