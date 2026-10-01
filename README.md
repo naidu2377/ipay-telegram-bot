@@ -187,3 +187,17 @@ Security submenu:
 Navigation:
 - ◀️ BACK
 - 🏠 HOME
+
+
+## Render troubleshooting / fixed mode
+
+This version deliberately uses Telegram long polling instead of a Telegram webhook.
+You do **not** need `WEBHOOK_URL`. On startup it removes any old webhook, connects to
+Telegram, logs the bot username, and starts polling. Render only needs the bot token
+(and optional admin ID) as secrets.
+
+Required Render environment variables:
+- `BOT_TOKEN` — BotFather token
+- `ADMIN_IDS` — your numeric Telegram ID, if you want admin commands
+
+Do not set `WEBHOOK_URL` for this version.

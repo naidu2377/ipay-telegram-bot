@@ -721,12 +721,21 @@ def start_health_server(port):
     logging.info("Health server listening on port %s", port)
 
 
+async def post_init(application):
+    # Ensure Telegram is not still sending updates to an old webhook.
+    # The Render service uses long polling for reliable setup without
+    # requiring a public Telegram webhook endpoint.
+    await application.bot.delete_webhook(drop_pending_updates=False)
+    me = await application.bot.get_me()
+    logging.info("Telegram bot connected: @%s (id=%s)", me.username, me.id)
+
+
 def build_application():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is missing.")
     init_db()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_help))
@@ -770,28 +779,17 @@ def main():
     logging.getLogger("httpx").setLevel(logging.WARNING)
     application = build_application()
 
-    webhook_url = os.getenv("WEBHOOK_URL", "").rstrip("/")
-    port = int(os.getenv("PORT", "7860" if os.getenv("SPACE_ID") else "10000"))
-    if os.getenv("SPACE_ID") or (os.getenv("RENDER") and not webhook_url):
-        start_health_server(port)
+    port = int(os.getenv("PORT", "7860"))
+    # Always expose a tiny HTTP health endpoint for Render while the bot
+    # receives Telegram updates through long polling.
+    start_health_server(port)
 
     try:
-        if webhook_url:
-            logging.info("Starting Telegram webhook on port %s", port)
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=port,
-                url_path="telegram",
-                webhook_url=f"{webhook_url}/telegram",
-                drop_pending_updates=False,
-                allowed_updates=Update.ALL_TYPES,
-            )
-        else:
-            logging.info("Starting polling mode.")
-            application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=False,
-            )
+        logging.info("Starting Telegram long polling.")
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=False,
+        )
     except InvalidToken:
         logging.critical(
             "Telegram rejected BOT_TOKEN. Create a fresh token with BotFather; its value was suppressed."
